@@ -1,0 +1,26 @@
+select t.user_id,
+       date_trunc('month', t.date) as month,
+       sum(t.payout) as payout,
+       sum(t.fee) as fee,
+       sum(t.tax) as tax,
+       sum(t.total_amount) as total_amount
+from (
+select t.user_id,
+       t.date,
+       (select sum(ti2.amount)
+        from transaction_items ti2
+        where ti2.transaction_id = t.id and ti2.type = 100) as payout,
+       (select sum(ti2.amount)
+        from transaction_items ti2
+        where ti2.transaction_id = t.id and ti2.type = 23) as fee,
+       (select sum(ti2.amount)
+        from transaction_items ti2
+        where ti2.transaction_id = t.id and ti2.type = 25) as tax,
+       sum(ti.amount) as total_amount
+from transactions t
+         join transaction_items ti on ti.transaction_id = t.id
+where t.user_id = 879
+  and t.type = 23
+group by t.id, t.user_id) t
+group by t.user_id, date_trunc('month', t.date)
+order by date_trunc('month', t.date) desc
