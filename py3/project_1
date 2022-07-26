@@ -1,0 +1,264 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sqlalchemy import create_engine
+
+#
+
+# import and config postgresql
+                                       # set parameters:
+db_config = {'user': 'xx',     # user_name
+'pwd': 'xxxx',                 # password
+'host': 'x.x.x.x',              # host
+'port': xxx,                         # port
+'db': 'xxxx'}                       # ddb_name
+connection_string = 'postgresql://{}:{}@{}:{}/{}'.format(db_config['user'],
+ db_config['pwd'],
+ db_config['host'],
+ db_config['port'],
+ db_config['db'])
+                                      # saving connector
+engine = create_engine(connection_string, connect_args={'sslmode':'require'}) 
+
+#
+
+query_1 = """SELECT sum(channel_app) as app_rev,
+       sum(channel_ppp) as ppp_rev,
+       date as date,
+       channel_id
+FROM connect_request_revenues crr
+         JOIN connect_requests cr on crr.connect_request_id = cr.id
+         JOIN channels c on cr.channel_id = c.id
+
+WHERE date between '2022-01-01' and '2022-07-01'
+group by date, channel_id
+order by date desc
+"""
+df_rev = pd.io.sql.read_sql(query_1, con = engine) # data from revenues
+
+#
+
+query_2 = """SELECT sum (channel_app) as app_an,
+       sum (channel_ppp) as ppp_an,
+       car.date as date,
+       channel_id
+FROM channel_analytic_revenues car
+
+    WHERE date between '2022-01-01' and '2022-07-01'
+group by channel_id,car.date
+order by date desc
+"""
+
+df_an = pd.io.sql.read_sql(query_2, con = engine)  # data from analytics
+
+#
+
+# _____ Funcs set: _____
+
+def comparsion_metrics(analytics, revenues):
+    '''compares and describes analytics and revenues metrics'''
+    print('app metrics (rev and an):')
+    print(round(revenues['app_rev'].sum(),2))
+    print(round(analytics['app_an'].sum(),2))
+    print()
+    print('ppp metrics (rev and an):')
+    print(round(revenues['ppp_rev'].sum(),2))
+    print(round(analytics['ppp_an'].sum(),2))
+    print()
+    print('connect_request_revenues list len:')
+    print(len(revenues))
+    print('connect_analytic_revenues list len:')
+    print(len(analytics))
+    print()
+    print('----')
+    print()
+    print('columns analytics:')
+    display(analytics.head(1))
+    print('columns revenues:')
+    display(revenues.head(1))
+
+comparsion_metrics(df_an,df_rev)
+
+# match events and find unmatched
+def match(an, rev):
+    '''match events and find unmatched'''
+    common = an.merge(rev, on = ['channel_id','date'], how = 'inner')
+    common_2 = an.merge(rev, on = ['channel_id','date'], how = 'outer')
+    comm_nan = common_2.query('(ppp_an != ppp_an) or (app_an != app_an)')
+    common['app_delta'] = common['app_rev'] - common['app_an']
+    common['ppp_delta'] = common['ppp_rev'] - common['ppp_an']
+    common['app_ratio'] = common['app_rev'] / common['app_an']
+    common['ppp_ratio'] = common['ppp_rev'] / common['ppp_an']
+    common = common.query('app_ratio == app_ratio and ppp_ratio == ppp_ratio and app_ratio>0 and ppp_ratio>0')
+    return common, comm_nan
+    
+common, comm_nan = match(df_an, df_rev)
+
+## PPP анализ и распределение
+
+def ppp(df,ratio_pos = 1.2,ratio_neg = 0.8 ,delta_min_positive = 1,delta_min_negative = -1):
+    '''analysis of negative and positive deviations for ppp'''
+    ratio_max = 200
+    ratio_min = 0.005
+    
+    df_ppp = df[['ppp_an','ppp_rev','ppp_delta','ppp_ratio','date','channel_id']]
+    df_ppp = df_ppp.query('ppp_ratio < @ratio_max and ppp_ratio > @ratio_min')
+    
+    df_ppp_positive = df_ppp.query('ppp_ratio >= @ratio_pos')
+    df_ppp_negative = df_ppp.query('ppp_ratio <= @ratio_neg')
+    
+    df_ppp_positive_view = df_ppp_positive.query('ppp_delta >= @delta_min_positive')
+    df_ppp_negative_view = df_ppp_negative.query('ppp_delta <= @delta_min_negative')
+    
+    
+    
+    print('ppp negative:')
+    display(df_ppp_negative_view.sort_values('ppp_delta', ascending = True).head(5))
+    print('negative len:')
+    print(len(df_ppp_negative_view))
+    print('negative max amount:')
+    print(round(df_ppp_negative_view['ppp_delta'].min(),2))
+    print('negative median amount:')
+    print(round(df_ppp_negative_view['ppp_delta'].median(),2))
+    print('negative mean amount:')
+    print(round(df_ppp_negative_view['ppp_delta'].mean(),2))
+    
+    sns.scatterplot(data=df_ppp_negative_view, x="ppp_delta", y="ppp_ratio")
+    plt.title('scatter delta to ratio NEGATIVE and POSITIVE ')
+    plt.show
+    
+    sns.scatterplot(data=df_ppp_positive_view, x="ppp_delta", y="ppp_ratio")
+    #plt.title('scatter delta to ratio POSITIVE 1 ')
+    plt.show
+    
+    df_ppp_negative_view.plot(x='ppp_delta', y='ppp_ratio', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('scatter delta to ratio NEGATIVE 2 ')
+    plt.show
+    
+    df_ppp_positive_view.plot(x='ppp_delta', y='ppp_ratio', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('scatter delta to ratio POSITIVE 2 ')
+    plt.show
+    
+    print()
+    print('ppp positive:')
+    display(df_ppp_positive_view.sort_values('ppp_delta', ascending = False).head(5))
+    print('positive len:')
+    print(len(df_ppp_positive_view))
+    print('positive max amount:')
+    print(round(df_ppp_positive_view['ppp_delta'].max(),2))
+    print('positive median amount:')
+    print(round(df_ppp_positive_view['ppp_delta'].median(),2))
+    print('positive mean amount:')
+    print(round(df_ppp_positive_view['ppp_delta'].mean(),2))
+    
+    return df_ppp_negative_view, df_ppp_positive_view
+    
+ratio_pos = 1.2           # set a MIN deviation ratio to positive per event (day)
+ratio_neg = 0.8           # set a MIN deviation ratio to negative per event (day)
+delta_min_positive = 1    # set a MIN deviation amount $ to positive per event (day)
+delta_min_negative = -1   # set a MIN deviation amount $ to negative per event (day)
+
+df_ppp_negative_view, df_ppp_positive_view = ppp(common, ratio_pos, ratio_neg, delta_min_positive, delta_min_negative)
+
+def ppp_delta_to_amount(positive,negative):
+    '''positive and negative charts delta to amount'''
+    sns.scatterplot(data=negative, x="ppp_delta", y="ppp_rev")
+    plt.title('scatter delta to revenue NEGATIVE and POSITIVE ')
+    plt.show
+    
+    sns.scatterplot(data=positive, x="ppp_delta", y="ppp_rev")
+    #plt.title('scatter delta to ratio POSITIVE 1 ')
+    plt.show
+    negative.plot(x='ppp_delta', y='ppp_rev', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('plot delta to revenue NEGATIVE ')
+    plt.show
+    positive.plot(x='ppp_delta', y='ppp_rev', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('plot delta to revenue POSITIVE ')
+    plt.show
+    
+ppp_delta_to_amount(df_ppp_negative_view, df_ppp_positive_view)
+
+#
+
+## APP анализ и распределение
+
+def app(df,ratio_pos = 1.2,ratio_neg = 0.8 ,delta_min_positive = 1,delta_min_negative = -1):
+    '''analysis of negative and positive deviations for app'''
+    ratio_max = 200
+    ratio_min = 0.005
+    
+    df_app = df[['app_an','app_rev','app_delta','app_ratio','date','channel_id']]
+    df_app = df_app.query('app_ratio < @ratio_max and app_ratio > @ratio_min')
+    
+    df_app_positive = df_app.query('app_ratio >= @ratio_pos')
+    df_app_negative = df_app.query('app_ratio <= @ratio_neg')
+    
+    df_app_positive_view = df_app_positive.query('app_delta >= @delta_min_positive')
+    df_app_negative_view = df_app_negative.query('app_delta <= @delta_min_negative')
+    
+    
+    
+    print('app negative:')
+    display(df_app_negative_view.sort_values('app_delta', ascending = True).head(5))
+    print('negative len:')
+    print(len(df_app_negative_view))
+    print('negative max amount:')
+    print(round(df_app_negative_view['app_delta'].min(),2))
+    print('negative median amount:')
+    print(round(df_app_negative_view['app_delta'].median(),2))
+    print('negative mean amount:')
+    print(round(df_app_negative_view['app_delta'].mean(),2))
+    
+    sns.scatterplot(data=df_app_negative_view, x="app_delta", y="app_ratio")
+    plt.title('scatter delta to ratio NEGATIVE and POSITIVE ')
+    plt.show
+    
+    sns.scatterplot(data=df_app_positive_view, x="app_delta", y="app_ratio")
+    #plt.title('scatter delta to ratio POSITIVE 1 ')
+    plt.show
+    
+    df_app_negative_view.plot(x='app_delta', y='app_ratio', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('scatter delta to ratio NEGATIVE 2 ')
+    plt.show
+    
+    df_app_positive_view.plot(x='app_delta', y='app_ratio', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('scatter delta to ratio POSITIVE 2 ')
+    plt.show
+    
+    print()
+    print('app positive:')
+    display(df_app_positive_view.sort_values('app_delta', ascending = False).head(5))
+    print('positive len:')
+    print(len(df_app_positive_view))
+    print('positive max amount:')
+    print(round(df_app_positive_view['app_delta'].max(),2))
+    print('positive median amount:')
+    print(round(df_app_positive_view['app_delta'].median(),2))
+    print('positive mean amount:')
+    print(round(df_app_positive_view['app_delta'].mean(),2))
+    
+    return df_app_negative_view, df_app_positive_view
+    
+def app_delta_to_amount(positive,negative):
+    '''positive and negative charts delta to amount for app'''
+    sns.scatterplot(data=negative, x="app_delta", y="app_rev")
+    plt.title('scatter delta to revenue NEGATIVE and POSITIVE ')
+    plt.show
+    
+    sns.scatterplot(data=positive, x="app_delta", y="app_rev")
+    #plt.title('scatter delta to ratio POSITIVE 1 ')
+    plt.show
+    negative.plot(x='app_delta', y='app_rev', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('plot delta to revenue NEGATIVE ')
+    plt.show
+    positive.plot(x='app_delta', y='app_rev', kind='hexbin', gridsize=20, figsize=(8, 6), sharex=False, grid=True)
+    plt.title('plot delta to revenue POSITIVE ')
+    plt.show
+    
+ratio_pos = 1.5           # set a MIN deviation ratio to positive per event (day)
+ratio_neg = 0.5           # set a MIN deviation ratio to negative per event (day)
+delta_min_positive = 10    # set a MIN deviation amount $ to positive per event (day)
+delta_min_negative = -10   # set a MIN deviation amount $ to negative per event (day)
+
+df_app_negative_view, df_app_positive_view = app(common, ratio_pos, ratio_neg, delta_min_positive, delta_min_negative)
+app_delta_to_amount(df_app_negative_view, df_app_positive_view)
