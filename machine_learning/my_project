@@ -1,0 +1,137 @@
+# import libs
+import pandas as pd
+import seaborn as sns
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.preprocessing import StandardScaler
+import numpy as np
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sqlalchemy import create_engine
+from sklearn.cluster import KMeans
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import roc_auc_score
+from scipy.cluster.hierarchy import dendrogram, linkage 
+
+# import and config postgresql
+                                       # set parameters:
+db_config = {'user': 'xx',     # user_name
+'pwd': 'xxxx',                 # password
+'host': 'x.x.x.x',              # host
+'port': xxx,                         # port
+'db': 'xxxx'}                       # ddb_name
+connection_string = 'postgresql://{}:{}@{}:{}/{}'.format(db_config['user'],
+ db_config['pwd'],
+ db_config['host'],
+ db_config['port'],
+ db_config['db'])
+                                      # saving connector
+engine = create_engine(connection_string, connect_args={'sslmode':'require'}) 
+
+# saving data
+
+query = """SELECT *
+FROM dataset
+"""
+df = pd.io.sql.read_sql(query, con = engine) # data from revenues
+
+#df.info()
+#df.describe()
+#df = pd.get_dummies(df)
+
+# PREP AND VISUALISATION
+
+df_left = df.query('Churn == 1') # left clients
+df_rem = df.query('Churn == 0') # clients which are have remained
+df_top = df.head(0)
+
+df_g = df.groupby('Churn').agg({'mean'})
+
+# build corr matrix
+cm = df_left.corr() #вычисляем матрицу корреляций
+fig, ax = plt.subplots()
+
+# heatmap building
+sns.heatmap(cm, annot=True, square=True) 
+sns.set(rc = {'figure.figsize':(10,10)})
+plt.show()
+
+cm2 = df_rem.corr() # calculate corr matrix
+fig, ax = plt.subplots()
+
+# second map building
+sns.heatmap(cm2, annot=True, square=True) #ваш код здесь
+sns.set(rc = {'figure.figsize':(10,10)})
+plt.show()
+
+# DATA PREP
+
+# devide for matrix (matrix X) and target variable (y) and delete some fields which is correlated too much
+df_cleared = df.drop('Avg_class_frequency_current_month',axis=1).drop('Contract_period',axis=1)
+X = df_cleared.drop('Churn', axis =1) 
+y = df_cleared['Churn'] 
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2,random_state=0)
+
+model_1 = LogisticRegression(solver='liblinear') 
+model_1.fit(X_train, y_train) 
+predictions = model_1.predict(X_test)
+probabilities = model_1.predict_proba(X_test)[:,1]
+
+scaler = StandardScaler()
+scaler.fit(X_train)
+X_train_st = scaler.transform(X_train)
+X_test_st = scaler.transform(X_test)
+
+# random forest as a basic algorithm
+rf_model = RandomForestClassifier(n_estimators = 100, random_state = 0) 
+
+# learn random forest model
+rf_model.fit(X_train_st, y_train)
+
+# using model as forecast
+rf_predictions = rf_model.predict(X_test_st)
+rf_probabilities = rf_model.predict_proba(X_test_st)[:, 1]
+
+# data standartisationn
+scaler_2 = StandardScaler()
+X_sc = scaler_2.fit_transform(X_train)
+
+linked = linkage(X_sc, method = 'ward') 
+
+# clusters visualisation
+plt.figure(figsize=(15, 10))  
+dendrogram(linked, orientation='top')
+plt.title('clustering')
+plt.show() 
+
+
+df_km = df
+# set k_means with 3 clusters and set random_state value
+km = KMeans(n_clusters=5, random_state=0)
+# cluster forecating (algo assigns values from 0 to 2)
+labels_2 = km.fit_predict(df_km)
+
+# save cluster metrics to data set column
+#X_train_km = X_train
+df_km['cluster_km'] = labels_2
+df_cl = df_km.groupby(['cluster_km']).mean().reset_index()
+display(df_cl)
+
+chart_1 = df_cl[['cluster_km','gender']]
+
+display(chart_1)
+
+# some charts to see the result picture
+
+df_cl['Avg_class_frequency_total'].plot(kind='pie')
+plt.show()
+print()
+df_cl['Avg_class_frequency_total'].plot(kind = 'bar', stacked = True, alpha = 0.5)
+plt.show()
+df_cl['Lifetime'].plot(kind = 'bar', stacked = True, alpha = 0.5)
+df_cl['Month_to_end_contract'].plot(kind = 'bar', stacked = True, alpha = 0.5)
+plt.show()
+df_cl['Avg_additional_charges_total'].plot(kind = 'bar', stacked = True, alpha = 0.5)
+plt.show()
