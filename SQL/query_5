@@ -1,0 +1,7 @@
+SELECT x.user_id
+FROM
+(SELECT *, 
+       ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn
+FROM tools_shop.users
+) x
+WHERE x.rn = 2021
