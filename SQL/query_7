@@ -1,0 +1,12 @@
+-- window()
+
+select order_id,
+       date_trunc('month', created_at)::date as month,
+       total_amt,
+       count(order_id) over my_window as cum_count,
+       sum(total_amt) over my_window as cum_sum
+from tools_shop.orders o
+
+
+WINDOW my_window AS (order by date_trunc('month', created_at))
+order by created_at desc
