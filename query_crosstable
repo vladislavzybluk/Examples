@@ -1,0 +1,56 @@
+SELECT to_dec.rowid::DEC
+       ,to_dec.month_1::DEC ,to_dec.month_2::DEC ,to_dec.month_3::DEC ,to_dec.month_4::DEC
+       ,to_dec.month_5::DEC ,to_dec.month_6::DEC ,to_dec.month_7::DEC ,to_dec.month_8::DEC
+       ,to_dec.month_9::DEC ,to_dec.month_10::DEC ,to_dec.month_11::DEC ,to_dec.month_12::DEC
+       ,to_dec.month_13::DEC ,to_dec.month_14::DEC ,to_dec.month_15::DEC ,to_dec.month_16::DEC
+       ,to_dec.month_17::DEC ,to_dec.month_18::DEC ,to_dec.month_19::DEC ,to_dec.month_20::DEC
+       ,to_dec.month_21::DEC ,to_dec.month_22::DEC ,to_dec.month_23::DEC ,to_dec.month_24::DEC
+FROM (
+    SELECT * FROM crosstab(
+                          '
+    SELECT x.rowid,
+           x.category,
+           CASE
+           WHEN x.values > 0 THEN (x.values)::text
+           WHEN x.values < 0 THEN (0)::text
+           END
+    FROM (WITH debt AS (SELECT  p5.user_id,
+                                round((((p5.amount*p5.percent/100)+p5.amount) - p5.paid_amount)::DEC,2) AS current_debt
+                        FROM prepayments AS p5 JOIN prepayment_status_logs psl5 ON p5.id = psl5.prepayment_id
+                             WHERE psl5.status = 3 AND psl5.is_active = True) ' ||
+         'SELECT t3.user_id::TEXT AS rowid,
+                 multiplier::TEXT AS category,
+                 ((debt.current_debt::DEC) - (ROUND((revenue * multiplier)::DEC, 2))) AS values
+         FROM (SELECT t2.user_id,
+                      date::DATE,
+                      (SELECT coalesce(SUM(vcrr.channel_app + vcrr.channel_ppp + vcrr.channel_sct +
+                              vcrr.channel_spt + vcrr.channel_pug + vcrr.channel_aug - vcrr.usa_tax), 0) AS revenue
+                      FROM user_channel AS uc
+                            JOIN channels AS c ON uc.channel_id = c.id
+                            JOIN owners AS o ON c.owner_id = o.id
+                            JOIN connect_requests AS cr ON cr.channel_id = c.id
+                            JOIN view_connect_request_monthly_revenues AS vcrr ON cr.id = vcrr.connect_request_id
+                            WHERE uc.user_id = t2.user_id
+                            AND (is_ours = True)
+                            AND vcrr.date BETWEEN (SELECT (rg.date)::DATE ' ||
+                                                  'FROM report_groups AS rg ORDER BY rg.date DESC LIMIT 1) AND
+                               (SELECT (rg.date + interval ''1'' month)::date ' ||
+                               'FROM report_groups AS rg ORDER BY rg.date DESC LIMIT 1)),
+                      EXTRACT(month FROM (age(date, NOW() - INTERVAL ''1'' MONTH))) +
+                      EXTRACT(year FROM (age(date, NOW() - INTERVAL ''1'' MONTH))) * 12 AS multiplier
+                FROM (SELECT users.id AS user_id, ' ||
+                            'date
+                      FROM (SELECT DATE(DATE_TRUNC(''month'', NOW())) + (INTERVAL ''1'' MONTH * GENERATE_SERIES(0, 23)) AS date) AS t
+                            CROSS JOIN users
+                            WHERE EXISTS(SELECT 1
+                                         FROM prepayment_status_logs AS psl
+                                                WHERE psl.is_active = True
+                                                AND psl.status = 3
+                                                AND exists(SELECT 1 ' ||
+                                                          'FROM prepayments AS p ' ||
+                                                                'WHERE p.user_id = users.id))) AS t2) AS t3 ' ||
+         'JOIN debt ON debt.user_id = t3.user_id) AS x ' )
+    AS ct(rowid TEXT, month_1 TEXT, month_2 TEXT, month_3 TEXT, month_4 TEXT, month_5 TEXT, month_6 TEXT, month_7 TEXT, month_8 TEXT, month_9 TEXT, month_10 TEXT, month_11 TEXT, month_12 TEXT,
+          month_13 TEXT, month_14 TEXT, month_15 TEXT, month_16 TEXT, month_17 TEXT, month_18 TEXT, month_19 TEXT, month_20 TEXT, month_21 TEXT, month_22 TEXT, month_23 TEXT, month_24 TEXT)
+
+) AS to_dec
