@@ -1,0 +1,18 @@
+WITH x AS
+        (SELECT u.id AS user_id,
+                DATE_TRUNC('month',u.created_at) AS cohort_month,
+                DATE_TRUNC('day',u.created_at) AS registration_date,
+                DATE_TRUNC('day',MIN(pr.created_at)OVER(PARTITION BY u.id)) AS first_withdrawal_date,
+                AGE(MIN(pr.created_at)OVER(PARTITION BY u.id), u.created_at) AS adoption
+        from payment_requests pr
+                 JOIN user_payment_methods upm ON pr.user_payment_method_id = upm.id
+                 JOIN payment_methods pm ON upm.payment_method_id = pm.id
+                 JOIN payment_request_status_logs prsl ON pr.id = prsl.payment_request_id
+                 JOIN users u ON upm.user_id = u.id
+        WHERE prsl.status = 10 AND prsl.is_active = true
+        )
+SELECT cohort_month,
+       avg(adoption) AS avg_adoption
+FROM x
+GROUP BY cohort_month
+ORDER BY cohort_month DESC
