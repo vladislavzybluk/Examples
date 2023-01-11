@@ -1,0 +1,153 @@
+WITH
+    cha AS (
+        SELECT u2.id AS user_id,
+               count(distinct c2.id) channels_number
+        FROM users u2
+                 JOIN user_channel uc2 ON u2.id = uc2.user_id
+                 JOIN channels c2 ON uc2.channel_id = c2.id
+                 JOIN connect_requests r2 ON c2.id = r2.channel_id
+                 JOIN connect_request_status_logs l2 ON r2.id = l2.connect_request_id
+        WHERE l2.status = 4 AND l2.is_active AND uc2.is_main
+          AND u2.email NOT LIKE ('%mediacube%')
+        GROUP BY u2.id
+    ),
+    rev AS (WITH avg_net AS (SELECT avg.*,
+                                    ROUND(AVG(avg.network_revenue)OVER(PARTITION BY avg.user_id ORDER BY avg.date RANGE BETWEEN '2 month' PRECEDING AND CURRENT ROW),2) AS average_network
+                             FROM (SELECT uc3.user_id,
+                                          vcrr.date::date,
+                                          ROUND(sum(vcrr.channel_app + vcrr.channel_aug + vcrr.channel_pug + vcrr.channel_ppp + vcrr.channel_oth + vcrr.channel_sht + vcrr.channel_sct + vcrr.channel_spt - COALESCE(vcrr.channel_usa_tax, 0)),2) AS channel_revenue,
+                                          ROUND(sum(vcrr.network_app + vcrr.network_aug + vcrr.network_pug + vcrr.network_ppp + vcrr.network_oth + vcrr.network_sht+ vcrr.network_sct + vcrr.network_spt - COALESCE(vcrr.network_usa_tax, 0)),2) AS network_revenue,
+                                          ROUND(sum(vcrr.app + vcrr.aug + vcrr.pug + vcrr.ppp + vcrr.oth + vcrr.sht+ vcrr.sct + vcrr.spt - COALESCE(vcrr.usa_tax, 0)),2) AS total_revenue
+                                   FROM connect_requests cr3
+                                            JOIN view_connect_request_monthly_revenues vcrr ON cr3.id = vcrr.connect_request_id
+                                            JOIN channels c3 ON cr3.channel_id = c3.id
+                                            JOIN user_channel uc3 ON c3.id = uc3.channel_id
+                                            JOIN users u ON uc3.user_id = u.id
+                                   WHERE vcrr.date <= (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true) AND -- here we put <= to calculate average for last 3 month
+                                       (uc3.is_main) --and (u.mcn_id = 269)
+                                     AND u.email NOT LIKE ('%mediacube%')
+                                   GROUP BY uc3.user_id, vcrr.date
+                                  ) avg)
+            SELECT avg_net.network_revenue AS network_revenue,
+                   avg_net.total_revenue AS total_revenue,
+                   avg_net.channel_revenue AS channel_revenue,
+                   avg_net.average_network AS average_network,
+                   avg_net.date,
+                   avg_net.user_id
+            FROM avg_net
+            WHERE avg_net.date = (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true) -- here we put = to take only the last row by user
+    ),
+
+    ff AS (WITH pr AS (SELECT
+                           u.id                                 AS user_id,
+                           coalesce(sum(abs(pr.fee)),0)         AS fee_pr
+                       FROM payment_requests pr
+                                JOIN user_payment_methods upm ON pr.user_payment_method_id = upm.id
+                                JOIN payment_methods pm ON upm.payment_method_id = pm.id
+                                JOIN payment_request_status_logs prsl ON pr.id = prsl.payment_request_id
+                                JOIN users u ON upm.user_id = u.id
+                       WHERE prsl.status = 10
+                         AND prsl.is_active = true
+                         AND u.id NOT IN (12401, 2860, 12922, 89224, 85222, 12292, 29522, 89932, 29535, 96231, 22217, 96479)
+                         AND date_trunc('month', prsl.created_at)::date = (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true)
+                       GROUP BY  u.id
+    ),
+                gi AS (SELECT sum(abs(amount))                   AS gi_fee,
+                              ue2.id                             AS user_id
+                       FROM transaction_items AS ti
+                                JOIN transactions t ON ti.transaction_id = t.id
+                                JOIN users ue2 ON t.user_id = ue2.id
+                       WHERE ti.type = 20
+                         AND t.status NOT IN (-1,-5)
+                         AND date_trunc('month', ti.created_at)::date  = (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true)
+                       GROUP BY ue2.id
+                ),
+                ej AS (SELECT ROUND(sum(ABS(amount)), 2)        AS ej_fee,
+                              u.id                              AS user_id
+                       FROM transactions t
+                                JOIN users u ON u.id = t.user_id
+                                JOIN transaction_items ti ON ti.transaction_id = t.id
+                       WHERE ti.amount != 0
+                         AND ti.type = 23
+                         AND t.status NOT IN (-1,-5)
+                         AND date_trunc('month', ti.created_at)::date = (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true)
+                       GROUP BY  u.id
+                ),
+                av AS (SELECT us2.id AS user_id,
+                              round(sum((amount * (1 + (percent / 100))) - p.amount)::dec, 2) AS av_fee
+                       FROM prepayments p
+                                JOIN prepayment_status_logs psl ON p.id = psl.prepayment_id
+                                JOIN users us2 ON p.user_id = us2.id
+                       WHERE (status = 3) AND
+                               date_trunc('month', psl.created_at)::date = (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true)
+                       GROUP BY us2.id
+                ),
+                p2p AS (SELECT abs(sum(ti4.amount))                AS p2p_fee,
+                               up2p.id AS user_id
+                        FROM transactions t4
+                                 JOIN transaction_items ti4 ON t4.id = ti4.transaction_id
+                                 JOIN users up2p ON t4.user_id = up2p.id
+                        WHERE ti4.type = 61
+                          AND t4.status NOT IN (-1, -5)
+                          AND date_trunc('month', ti4.created_at)::date = (SELECT max(rg.date) FROM report_groups rg WHERE is_calculated = true)
+                        GROUP BY up2p.id
+                )
+           SELECT pr.user_id,
+                  (coalesce(p2p.p2p_fee,0) + coalesce(av.av_fee,0) + coalesce(ej.ej_fee,0) + coalesce(gi.gi_fee,0) + coalesce(pr.fee_pr,0)) AS fintech_fee
+           FROM pr
+                    LEFT JOIN gi ON pr.user_id = gi.user_id
+                    LEFT JOIN ej ON pr.user_id = ej.user_id
+                    LEFT JOIN av ON pr.user_id = av.user_id
+                    LEFT JOIN p2p ON pr.user_id = p2p.user_id
+
+    ),
+    first_req AS (SELECT u.id AS user_id,
+                         min(pr.created_at)::date AS first_req
+                  FROM payment_requests pr
+                           JOIN user_payment_methods upm ON pr.user_payment_method_id = upm.id
+                           JOIN payment_methods pm ON upm.payment_method_id = pm.id
+                           JOIN payment_request_status_logs prsl ON pr.id = prsl.payment_request_id
+                           JOIN users u ON upm.user_id = u.id
+                  WHERE prsl.status = 10 AND prsl.is_active = true
+                  GROUP BY u.id
+    )
+
+SELECT u.id AS user_id,
+       concat('https://mcpay.io/ru/adm/administrator/users/',u.id) AS link,
+       m.title AS csp_title,
+       cha.channels_number,
+       coalesce(rev.network_revenue, 0) AS network_revenue,
+       coalesce(rev.channel_revenue, 0) AS channel_revenue,
+       coalesce(rev.average_network, 0) AS avg_network_revenue,
+       coalesce(rev.total_revenue, 0) AS total_revenue,
+       round(((
+               (CASE WHEN rev.network_revenue > 0 THEN rev.network_revenue
+                     ELSE 2 END)
+               /
+               (CASE WHEN rev.total_revenue > 0 THEN rev.total_revenue
+                     ELSE 1 END)
+           )),2) as network_share, -- because else there will be devision by 0, but we need them! (people with 0)
+       -- so if it is zero than let it be like "200", after in GDS we change all "200" to 0
+       co.name AS country,
+       coalesce(ff.fintech_fee,0) AS fintech_fee,
+       u.created_at::date AS registration_date,
+       first_req.first_req,
+       coalesce(
+
+               CASE
+                   WHEN (ff.fintech_fee = 0 OR ff.fintech_fee != ff.fintech_fee) THEN 'doesnt use'
+                   WHEN (ff.fintech_fee < 10 AND ff.fintech_fee > 0 ) THEN '0 - 10 fintech'
+                   WHEN (ff.fintech_fee >= 10 AND ff.fintech_fee < 50) THEN '10 - 50 fintech'
+                   WHEN (ff.fintech_fee >= 50 AND ff.fintech_fee < 100) THEN '50 - 100 fintech'
+                   WHEN (ff.fintech_fee >= 100 AND ff.fintech_fee < 500) THEN '100 - 500 fintech'
+                   WHEN (ff.fintech_fee >= 500 AND ff.fintech_fee < 1000) THEN '500 - 1000 fintech'
+                   WHEN (ff.fintech_fee >= 1000 AND ff.fintech_fee < 5000) THEN '1000 - 5000 fintech'
+                   WHEN ff.fintech_fee >= 5000 THEN '5000+ fintech'
+                   END,'dont use') AS fintech_cohort
+FROM users u
+         JOIN mcns m ON u.mcn_id = m.id
+         JOIN cha ON cha.user_id = u.id
+         LEFT JOIN rev ON rev.user_id = u.id
+         LEFT JOIN countries co ON u.country_id = co.id
+         LEFT JOIN ff ON ff.user_id = u.id
+         LEFT JOIN first_req ON u.id = first_req.user_id
