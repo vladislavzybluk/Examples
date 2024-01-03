@@ -1,0 +1,228 @@
+-- Architecture of the query:
+-- global_query/
+--      global_query/profit_calculation/
+--          global_query/profit_calculation/all_time_profit/
+--              global_query/profit_calculation/all_time_profit/future_months - generates number of months that need to close prepayment (current month inclusive)
+--              global_query/profit_calculation/all_time_profit/past_months - get all data from past (till previous month inclusive)
+--              global_query/profit_calculation/all_time_profit/next_month_payment - all necessary financial information for "future_months"
+--
+-- Also be aware - "past_months" has UNION ALL with "future_months", and "next_month_payment" just connected only to "future_months" because it just like generate series
+--
+-- global_query need to clear all overpaid amounts from forecast
+WITH global_query AS
+         -- profit_calculation calculates profit based on future payments by month
+         (WITH profit_calculation AS
+                   -- all_time_profit generates all potential profit with assumptions
+                   (WITH all_time_profit AS
+                             -- generates series with numbers of month for each active prepayment
+                             (WITH future_months AS
+                                       (WITH RECURSIVE
+                                            months_cte AS (
+                                                ----------------------------------------------
+                                                WITH main AS
+                                                         (WITH paid_amount AS (SELECT t.prepayment_id,
+                                                                                      ROUND((SUM(ti.amount) * (-1))::dec, 2) as paid_amount
+                                                                               FROM transaction_items ti
+                                                                                        JOIN transactions t ON ti.transaction_id = t.id
+                                                                               WHERE ti.type IN (51, 52, 53)
+                                                                                 and t.status not in (-1, -5)
+                                                                                 and (date_trunc('month', ti.created_at)::date <
+                                                                                      date_trunc('month', now())::date)
+                                                                               GROUP BY 1), -- new method for calculating paid amount using transactions
+                                                               rev as (select uc.user_id,
+                                                                              ROUND(SUM(vcrr.channel_app +
+                                                                                        vcrr.channel_aug +
+                                                                                        vcrr.channel_pug +
+                                                                                        vcrr.channel_ppp +
+                                                                                        vcrr.channel_oth +
+                                                                                        vcrr.channel_sht +
+                                                                                        vcrr.channel_sct +
+                                                                                        vcrr.channel_spt -
+                                                                                        COALESCE(vcrr.channel_usa_tax, 0)),
+                                                                                    2) as channel_revenue
+                                                                       FROM view_connect_request_monthly_revenues vcrr
+                                                                                JOIN connect_requests cr
+                                                                                     on vcrr.connect_request_id = cr.id
+                                                                           --JOIN channels c on cr.channel_id = c.id
+                                                                                JOIN user_channel uc on cr.channel_id = uc.channel_id
+                                                                       WHERE uc.is_main
+                                                                         and vcrr.date::date =
+                                                                             (date_trunc('month', now())::date - interval '1 month')::date -- changed from report month to prev. month
+                                                                       GROUP BY 1)
+                                                          SELECT distinct p.user_id,
+                                                                          (CASE
+                                                                               WHEN rev.channel_revenue > 0 THEN
+                                                                                   CEIL(round(
+                                                                                                ((p.amount + (p.amount * p.percent / 100) - coalesce(pa.paid_amount, 0))::dec),
+                                                                                                3) /
+                                                                                        (rev.channel_revenue * p.payout_percent / 100)) END) as months_left
+
+                                                          FROM prepayments p
+                                                                   JOIN prepayment_items pi on p.id = pi.prepayment_id
+                                                                   JOIN prepayment_status_logs psl on p.id = psl.prepayment_id
+                                                                   JOIN transaction_items ti on pi.transaction_item_id = ti.id
+                                                                   JOIN rev on rev.user_id = p.user_id
+                                                                   LEFT JOIN paid_amount pa on pa.prepayment_id = p.id
+                                                          WHERE psl.status in (3, 6)
+                                                            and psl.is_active --AND pi.amount > 0
+                                                            --AND rev.channel_revenue > 0
+                                                            AND p.payout_percent > 0
+                                                            --and (p.id = 804 or p.id = 133)
+                                                            AND pi.type != 2)
+                                                     ----------------------------------------------
+                                                SELECT user_id,
+                                                       months_left,
+                                                       date_trunc('MONTH', NOW()) AS month
+                                                FROM main),
+                                            recursive_series_cte AS (SELECT user_id,
+                                                                            months_left,
+                                                                            --date_trunc('MONTH', month + INTERVAL '1 month') AS month, - experiment
+                                                                            date_trunc('MONTH', month) AS month,
+                                                                            1                          AS level
+                                                                     FROM months_cte
+                                                                     UNION ALL
+                                                                     SELECT user_id,
+                                                                            months_left,
+                                                                            date_trunc('MONTH', (month + INTERVAL '1 month')),
+                                                                            level + 1
+                                                                     FROM recursive_series_cte
+                                                                     WHERE level < months_left)
+                                        SELECT distinct user_id,
+                                                        month::date
+                                        FROM recursive_series_cte
+                                        ORDER BY user_id,
+                                                 month),
+                                   past_months AS (WITH paid_amount AS (SELECT t.prepayment_id,
+                                                                               ROUND((SUM(ti.amount) * (-1))::dec, 2) as paid_amount
+                                                                        FROM transaction_items ti
+                                                                                 JOIN transactions t ON ti.transaction_id = t.id
+                                                                        WHERE ti.type IN (51, 52, 53)
+                                                                          and t.status not in (-1, -5)
+                                                                          and (date_trunc('month', ti.created_at)::date <
+                                                                               date_trunc('month', now())::date)
+                                                                        GROUP BY 1), -- new method for calculating paid amount using transactions
+                                                        rev as (select uc.user_id,
+                                                                       ROUND(SUM(vcrr.channel_app + vcrr.channel_aug +
+                                                                                 vcrr.channel_pug + vcrr.channel_ppp +
+                                                                                 vcrr.channel_oth + vcrr.channel_sht +
+                                                                                 vcrr.channel_sct + vcrr.channel_spt -
+                                                                                 COALESCE(vcrr.channel_usa_tax, 0)),
+                                                                             2) as channel_revenue
+
+                                                                FROM view_connect_request_monthly_revenues vcrr
+                                                                         JOIN connect_requests cr
+                                                                              on vcrr.connect_request_id = cr.id
+                                                                    --JOIN channels c on cr.channel_id = c.id
+                                                                         JOIN user_channel uc on cr.channel_id = uc.channel_id
+                                                                WHERE uc.is_main
+                                                                  and vcrr.date::date =
+                                                                      (date_trunc('month', now())::date - interval '1 month')::date -- changed from report month to prev. month
+                                                                GROUP BY 1)
+
+                                                   SELECT p.id, -- basically we have each row as sum of transactions, that were paid till today for each Month and for Each User
+                                                          p.user_id,
+                                                          date_trunc('month', ti.created_at)::date                    as tx_date,
+                                                          p.amount                                                    as prep_amount,
+                                                          (p.amount + (p.amount * p.percent / 100))                   as full_amount,
+                                                          p.payout_percent,
+                                                          pa.paid_amount,
+                                                          coalesce((rev.channel_revenue * p.payout_percent / 100), 0) as future_payment,
+                                                          round(
+                                                                  ((p.amount + (p.amount * p.percent / 100) - coalesce(pa.paid_amount, 0))::dec),
+                                                                  3)                                                  as current_debt,
+
+                                                          SUM(round(pi.amount, 2))                                    as pi_amount_per_month
+
+                                                   FROM prepayments p
+                                                            LEFT JOIN prepayment_items pi on p.id = pi.prepayment_id
+                                                            JOIN prepayment_status_logs psl on p.id = psl.prepayment_id
+                                                            JOIN transaction_items ti on pi.transaction_item_id = ti.id
+                                                            LEFT JOIN rev on rev.user_id = p.user_id
+                                                            LEFT JOIN paid_amount pa on pa.prepayment_id = p.id
+                                                   WHERE psl.status in (3, 5, 6)
+                                                     and psl.is_active --AND pi.amount > 0
+                                                     --AND rev.channel_revenue > 0
+                                                     --AND p.payout_percent > 0
+                                                     --and (p.id = 804 or p.id = 133)
+                                                     AND pi.type != 2
+                                                   GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9),
+                                   next_month_payment as (WITH rev as (select uc.user_id,
+
+                                                                              ROUND(SUM(vcrr.channel_app +
+                                                                                        vcrr.channel_aug +
+                                                                                        vcrr.channel_pug +
+                                                                                        vcrr.channel_ppp +
+                                                                                        vcrr.channel_oth +
+                                                                                        vcrr.channel_sht +
+                                                                                        vcrr.channel_sct +
+                                                                                        vcrr.channel_spt -
+                                                                                        COALESCE(vcrr.channel_usa_tax, 0)),
+                                                                                    2) as channel_revenue
+
+                                                                       FROM view_connect_request_monthly_revenues vcrr
+                                                                                JOIN connect_requests cr
+                                                                                     on vcrr.connect_request_id = cr.id
+                                                                           --JOIN channels c on cr.channel_id = c.id
+                                                                                JOIN user_channel uc on cr.channel_id = uc.channel_id
+                                                                       WHERE uc.is_main
+                                                                         and vcrr.date::date =
+                                                                             (date_trunc('month', now())::date - interval '1 month')::date -- changed from report month to prev. month
+                                                                       GROUP BY 1)
+                                                          SELECT p.user_id,
+                                                                 p.id,
+                                                                 p.amount,
+                                                                 (p.amount + (p.amount * p.percent / 100))      as full_amount,
+                                                                 (rev.channel_revenue * p.payout_percent / 100) as future_payment
+                                                          FROM prepayments p
+                                                                   JOIN prepayment_status_logs psl on p.id = psl.prepayment_id
+                                                                   JOIN rev on rev.user_id = p.user_id
+                                                          WHERE psl.status in (3, 6)
+                                                            and psl.is_active)
+                              SELECT pa.user_id,
+                                     pa.id                                 as prepayment_id,
+                                     pa.tx_date                            as month,
+                                     pa.prep_amount,
+                                     pa.full_amount,
+                                     --pa.pi_amount_per_month -- except future profit
+                                     -- we need to define what exactly is the past revenue month.
+                                     (CASE
+                                          WHEN pa.tx_date = date_trunc('month', NOW())::date THEN pa.future_payment
+                                          ELSE pa.pi_amount_per_month END) AS pi_amount_per_month
+                                     -- above here we suggest that current month has paid amount the same as previous month
+                              FROM past_months pa
+                              UNION ALL
+                              SELECT fm.user_id,
+                                     nmp.id,
+                                     fm.month,
+                                     nmp.amount,
+                                     nmp.full_amount,
+                                     nmp.future_payment
+                              FROM future_months fm
+                                       JOIN next_month_payment nmp on nmp.user_id = fm.user_id)
+                    SELECT *,
+                           SUM(round(atp.pi_amount_per_month, 2))
+                           OVER (PARTITION BY atp.prepayment_id ORDER BY atp.month ASC)                     as cum_sum,
+                           (SUM(round(atp.pi_amount_per_month, 2))
+                            OVER (PARTITION BY atp.prepayment_id ORDER BY atp.month ASC) - atp.prep_amount) as delta
+
+                    FROM all_time_profit atp
+                    ORDER BY 2, 3)
+          SELECT *,
+                 (CASE
+                      WHEN (pc.delta > 0) AND (pc.delta > pc.pi_amount_per_month)
+                          THEN pc.pi_amount_per_month -- definition of full profitable item
+                      WHEN (pc.delta > 0) AND (pc.delta <= pc.pi_amount_per_month)
+                          THEN pc.delta -- defenition of partly ptable itemrofi
+                      ELSE 0 -- defenition of item that is not profitable yet
+                     END) as profit
+
+          FROM profit_calculation pc)
+SELECT *,
+--below we need it just for the last payment in future, we have to set last payment and profit as equal to last part of the prepayment
+       ROUND((CASE
+                  WHEN (full_amount - cum_sum) >= 0 THEN profit
+                  WHEN (full_amount - cum_sum) < 0 AND ABS(full_amount - cum_sum) < pi_amount_per_month
+                      THEN profit - ABS(full_amount - cum_sum)
+                  WHEN (full_amount - cum_sum) < 0 AND ABS(full_amount - cum_sum) > pi_amount_per_month THEN 0
+           END)::DEC, 2) as total_profit_cleared
+FROM global_query gq
