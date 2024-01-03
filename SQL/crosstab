@@ -1,478 +1,120 @@
+WITH dec_ as (SELECT to_dec.rowid::DEC
+                   , to_dec.month_1::DEC
+                   , to_dec.month_2::DEC
+                   , to_dec.month_3::DEC
+                   , to_dec.month_4::DEC
+                   , to_dec.month_5::DEC
+                   , to_dec.month_6::DEC
+                   , to_dec.month_7::DEC
+                   , to_dec.month_8::DEC
+                   , to_dec.month_9::DEC
+                   , to_dec.month_10::DEC
+                   , to_dec.month_11::DEC
+                   , to_dec.month_12::DEC
+                   , to_dec.month_13::DEC
+                   , to_dec.month_14::DEC
+                   , to_dec.month_15::DEC
+                   , to_dec.month_16::DEC
+                   , to_dec.month_17::DEC
+                   , to_dec.month_18::DEC
+                   , to_dec.month_19::DEC
+                   , to_dec.month_20::DEC
+                   , to_dec.month_21::DEC
+                   , to_dec.month_22::DEC
+                   , to_dec.month_23::DEC
+                   , to_dec.month_24::DEC
+              FROM (SELECT *
+                    FROM crosstab(
+                                                     '
+                               SELECT x.rowid,
+x.category,
+CASE
+WHEN x.values > 0 THEN (x.values)::text
+WHEN x.values < 0 THEN (0)::text
+END
+FROM (WITH debt AS (
+WITH paid_amt AS (
+    SELECT t.prepayment_id,
+           ROUND((SUM(transaction_items.amount)*(-1))::dec,2) as paid_amount
+    FROM transaction_items
+             JOIN transactions t ON transaction_items.transaction_id = t.id
+    WHERE transaction_items.type IN (51,52,53) and t.status not in (-1,-5)
+    GROUP BY 1
+) -- added because we get rid of old paid amount field and started to calculate it from transactions
 
-with main as (WITH rev as (select uc.user_id,
-                                  ROUND(SUM(vcrr.channel_app + vcrr.channel_aug + vcrr.channel_pug + vcrr.channel_ppp +
-                                            vcrr.channel_oth + vcrr.channel_sht + vcrr.channel_sct + vcrr.channel_spt -
-                                            COALESCE(vcrr.channel_usa_tax, 0)), 2) as channel_revenue
-
-                           FROM view_connect_request_monthly_revenues vcrr
-                                    JOIN connect_requests cr on vcrr.connect_request_id = cr.id
-                                    JOIN channels c on cr.channel_id = c.id
-                                    JOIN user_channel uc on c.id = uc.channel_id
-                           WHERE uc.is_main
-                             and vcrr.date::date =
-                                 (date_trunc('month', now())::date - interval '1 month')::date -- changed from report month to prev. month*/
-                             and is_analytic = false
-                           GROUP BY 1),
-
-                   rev2 as (select uc.user_id,
-                                   ROUND(SUM(vcrr.channel_app + vcrr.channel_aug + vcrr.channel_pug + vcrr.channel_ppp +
-                                             vcrr.channel_oth + vcrr.channel_sht + vcrr.channel_sct + vcrr.channel_spt -
-                                             COALESCE(vcrr.channel_usa_tax, 0)), 2) as channel_revenue
-
-                            FROM view_connect_request_monthly_revenues vcrr
-                                     JOIN connect_requests cr on vcrr.connect_request_id = cr.id
-                                     JOIN channels c on cr.channel_id = c.id
-                                     JOIN user_channel uc on c.id = uc.channel_id
-                            WHERE uc.is_main
-                              and vcrr.date::date =
-                                  (date_trunc('month', now())::date - interval '2 month')::date -- отличие только здесь
-                              and is_analytic = false
-                            GROUP BY 1),
-
-                   rev_analytic as (select uc.user_id,
-                                           ROUND(SUM(vcrr.channel_app + vcrr.channel_aug + vcrr.channel_pug +
-                                                     vcrr.channel_ppp +
-                                                     vcrr.channel_oth + vcrr.channel_sht + vcrr.channel_sct +
-                                                     vcrr.channel_spt -
-                                                     COALESCE(vcrr.channel_usa_tax, 0)), 2) as channel_revenue
-
-                                    FROM view_connect_request_monthly_revenues vcrr
-                                             JOIN connect_requests cr on vcrr.connect_request_id = cr.id
-                                             JOIN channels c on cr.channel_id = c.id
-                                             JOIN user_channel uc on c.id = uc.channel_id
-                                    WHERE uc.is_main
-                                      and is_analytic = true
-                                      and vcrr.date::date = date_trunc('month', now())::date
-                                    GROUP BY 1),
-
-                   rev_analytic_last_mon as (select uc.user_id,
-                                                    ROUND(SUM(vcrr.channel_app + vcrr.channel_aug + vcrr.channel_pug +
-                                                              vcrr.channel_ppp +
-                                                              vcrr.channel_oth + vcrr.channel_sht + vcrr.channel_sct +
-                                                              vcrr.channel_spt -
-                                                              COALESCE(vcrr.channel_usa_tax, 0)), 2) as channel_revenue
-
-                                             FROM view_connect_request_monthly_revenues vcrr
-                                                      JOIN connect_requests cr on vcrr.connect_request_id = cr.id
-                                                      JOIN channels c on cr.channel_id = c.id
-                                                      JOIN user_channel uc on c.id = uc.channel_id
-                                             WHERE uc.is_main
-                                               and is_analytic = true
-                                               and vcrr.date::date = date_trunc('month', now() - interval '1 month')::date
-                                             GROUP BY 1),
-
-                   forecast AS (SELECT t.user_id                          as u_id,
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) >
-                                                 0 -- когда месяц транзакции совпадает с месяцем создания аванса и сумму транз более 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   date_trunc('month', psl.created_at) THEN ti.amount
-                                                              ELSE 0 END)) -- мы берем эту сумму
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '1 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_1_sum, -- иначе мы берем сумму следующего месяца
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '2 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то дефакто сумма второго месяца должна стать суммой первого
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '1 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_2_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '3 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '2 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_3_sum, -- иначе берем стандартно
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '4 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '3 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_4_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '5 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '4 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_5_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '6 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '5 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_6_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '7 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '6 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_7_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '8 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '7 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_8_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '9 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '8 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_9_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '10 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '9 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_10_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '11 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '10 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_11_sum,
-
-                                       (CASE
-                                            WHEN (sum(CASE
-                                                          WHEN date_trunc('month', ti.created_at) =
-                                                               date_trunc('month', psl.created_at) THEN abs(ti.amount)
-                                                          ELSE 0 END)) = 0 -- если сумма транз в первом месяце = 0
-                                                THEN (sum(CASE
-                                                              WHEN date_trunc('month', ti.created_at) =
-                                                                   (date_trunc('month', psl.created_at) + interval '12 month')
-                                                                  THEN ti.amount
-                                                              ELSE 0 END)) -- то берем +1 месяц
-                                            ELSE sum(CASE
-                                                         WHEN date_trunc('month', ti.created_at) =
-                                                              (date_trunc('month', psl.created_at) + interval '11 month')
-                                                             THEN ti.amount
-                                                         ELSE 0 END) END) AS month_12_sum,
-                                       'I'                                as border
---     sum(CASE WHEN date_trunc('month',ti.created_at) = date_trunc('month',psl.created_at) THEN ti.amount ELSE 0 END) AS double_month_1_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '1 month') THEN ti.amount ELSE 0 END) AS month_2_sum_double,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '2 month') THEN ti.amount ELSE 0 END) AS month_3_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '3 month') THEN ti.amount ELSE 0 END) AS month_4_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '4 month') THEN ti.amount ELSE 0 END) AS month_5_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '5 month') THEN ti.amount ELSE 0 END) AS month_6_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '6 month') THEN ti.amount ELSE 0 END) AS month_7_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '7 month') THEN ti.amount ELSE 0 END) AS month_8_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '8 month') THEN ti.amount ELSE 0 END) AS month_9_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '9 month') THEN ti.amount ELSE 0 END) AS month_10_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '10 month') THEN ti.amount ELSE 0 END) AS month_11_sum,
---     sum(CASE WHEN date_trunc('month',ti.created_at) = (date_trunc('month',psl.created_at)+interval '11 month') THEN ti.amount ELSE 0 END) AS month_12_sum
-
-                                FROM transactions t
-                                         JOIN transaction_items ti on t.id = ti.transaction_id
-                                         LEFT JOIN prepayments p on t.prepayment_id = p.id
-                                         LEFT JOIN prepayment_status_logs psl on p.id = psl.prepayment_id
-                                WHERE ti.type in (51, 52, 53) -- changed from prev. version -- ti.type = 51
-                                  AND psl.is_active
-                                  and psl.status = 3
-                                  and t.status not in (-1, -5)
-                                GROUP BY t.user_id),
-
-                   sum51 as (SELECT t.user_id,
-                                    sum(ti.amount) as sum_51
-                             FROM transactions t
-                                      JOIN transaction_items ti on t.id = ti.transaction_id
-                             WHERE ti.type in (51, 52, 53) -- changed from prev. version -- ti.type = 51 + ti.type = 53
-                               and t.status not in (-1, -5)
-                               and t.prepayment_id in (select distinct p.id
-                                                       from prepayments p
-                                                                join prepayment_status_logs psl on p.id = psl.prepayment_id
-                                                       where psl.is_active
-                                                         and psl.status = 3
-                                                         and p.user_id = t.user_id)
-                             GROUP BY 1),
-
-                   last_video as (SELECT uc2.user_id, max(c2.last_video_uploaded_at) as last_video
-                                  FROM channels c2
-                                           JOIN user_channel uc2 ON c2.id = uc2.channel_id
-                                  WHERE uc2.is_main
-                                  GROUP BY 1),
-
-                   mon_trans AS (SELECT p.id,
-                                        u.id                                            as user_id,
-                                        case
-                                            when count(distinct t.created_at::date) is null
-                                                then 0
-                                            else count(distinct t.created_at::date) end as months
-                                 FROM prepayments p
-                                          JOIN users u on p.user_id = u.id
-                                          JOIN prepayment_status_logs psl on p.id = psl.prepayment_id
-                                          LEFT JOIN transactions t on u.id = t.user_id
-                                 WHERE psl.status = 3
-                                   and psl.is_active
-                                   and t.type = 100
-                                   and t.status not in (-1, -5)
-                                   AND (psl.created_at < t.created_at)
-                                 GROUP BY 1, 2),
-
-                   mon_manual as (select p.id,
-                                         p.user_id,
-                                         case
-                                             when (extract(day from psl.created_at) < 26) or
-                                                  (date_trunc('month', u.created_at)::date =
-                                                   date_trunc('month', psl.created_at)::date)
-                                                 then extract(month from
-                                                              age(current_date, date_trunc('month', psl.created_at))) +
-                                                      12 * extract(year from
-                                                                   age(current_date, date_trunc('month', psl.created_at)))
-                                             else extract(month from
-                                                          age(current_date, date_trunc('month', psl.created_at))) - 1 +
-                                                  12 * extract(year from
-                                                               age(current_date, date_trunc('month', psl.created_at)))
-                                             end as months_manual
-                                  FROM prepayments p
-                                           JOIN users u on p.user_id = u.id
-                                           JOIN prepayment_status_logs psl on p.id = psl.prepayment_id
-                                  WHERE psl.status = 3
-                                    and psl.is_active),
-
-                   mon_res as (select mon_manual.id,
-                                      mon_manual.user_id,
-                                      case
-                                          when months_manual < months
-                                              then months
-                                          else months_manual end as months
-                               from mon_manual
-                                        left join mon_trans on mon_manual.id = mon_trans.id),
-
-                   paid_amt AS (SELECT t.prepayment_id,
-                                       ROUND((SUM(transaction_items.amount) * (-1))::dec, 2) as paid_amount
-                                FROM transaction_items
-                                         JOIN transactions t ON transaction_items.transaction_id = t.id
-                                WHERE transaction_items.type IN (51, 52, 53)
-                                  and t.status not in (-1, -5)
-                                GROUP BY 1) -- added becouse we get rid of old paid amount field and started to calculate it from transactions
-
-              SELECT p.id                                                                      as prepayment_id,
-                     u.id                                                                      as user_id,
-                     m.title                                                                   as csp_title,
-                     lv.last_video::date                                                       as last_video,
-                     psl.created_at::date                                                      as prepayment_approved,
-                     p.payout_percent,
-                     p.percent,
-                     p.amount + (p.amount * p.percent / 100)                                   as total_debt,
-                     rev_a.channel_revenue /
-                     (extract(day from current_date) - 3) * --добавил -3, потому что доход приходит на 3 дня позже
-                     extract(day from
-                             (DATE_TRUNC('month', CURRENT_DATE) + INTERVAL '1 month - 1 day')) as last_month_revenue_anal,
-                     case
-                         when extract(day from current_date) > 19 then rev.channel_revenue
-                         else rev2.channel_revenue end                                         as last_month_revenue_fact,
-                     --учитываем, что 20-е число - максимальный срок выставления отчёта по доходу за прошлый месяц
-                     p.return_period                                                           as return_period,
-                     round(((p.amount + (p.amount * p.percent / 100)) / p.return_period)::dec,
-                           2)                                                                  as payment_per_mon_forecast,
-                     round(((p.amount + (p.amount * p.percent / 100) - coalesce(pa.paid_amount, 0))::dec),
-                           3)                                                                  as current_debt,
-                     case
-                         when sum51.sum_51 is not null
-                             then abs(sum51.sum_51)
-                         else 0 end                                                            as mysum51,
-                     (CASE
-                          WHEN months > 0
-                              THEN
-                                  abs(sum51.sum_51) / months /
-                                  ((p.amount + (p.amount * p.percent / 100)) / return_period)
-                         END)                                                                  as AVG_tx,
-                     f.*,
-                     case
-                         when mon_res.months < 0 then 0
-                         else mon_res.months end                                               as amt_funds,
-                     rev_a_lm.channel_revenue                                                  as last_month_revenue_anal2
-              FROM prepayments p
-                       JOIN prepayment_status_logs psl
-                            on p.id = psl.prepayment_id
-                       LEFT JOIN paid_amt pa ON pa.prepayment_id = p.id
-                       JOIN users u on p.user_id = u.id
-                       JOIN mcns m on u.mcn_id = m.id
-                       LEFT JOIN rev on rev.user_id = u.id
-                       LEFT JOIN rev2 on rev2.user_id = u.id
-                       LEFT JOIN rev_analytic rev_a on rev_a.user_id = u.id
-                       LEFT JOIN rev_analytic_last_mon rev_a_lm on rev_a_lm.user_id = u.id
-                       LEFT JOIN forecast f on f.u_id = u.id
-                       LEFT JOIN sum51 on sum51.user_id = u.id
-                       LEFT JOIN last_video lv on lv.user_id = u.id
-                       LEFT JOIN mon_res on mon_res.id = p.id
-              WHERE psl.is_active
-                and psl.status = 3),
-
-     max_r as (SELECT uc.user_id,
-                      count(c.id) as channels_count
-               FROM user_channel uc
-                        JOIN channels c on uc.channel_id = c.id
-                        JOIN connect_requests cr on c.id = cr.channel_id
-                        JOIN connect_request_status_logs crsl on cr.id = crsl.connect_request_id
-               WHERE uc.is_main
-                 and crsl.status = 4
-                 and crsl.is_active
-               GROUP BY 1)
-SELECT prepayment_id,
-       main.user_id,
-       main.mysum51,
-       csp_title,
-       main.last_video,
-       prepayment_approved,
-       payout_percent,
-       percent,
-       total_debt,
-       round(last_month_revenue_anal::dec, 2)                                                      as last_month_revenue_anal,
-       round(last_month_revenue_fact::dec, 2)                                                      as last_month_revenue_fact,
---        round((last_month_revenue_anal * payout_percent / 100)::dec, 2)              as next_month_payment,
+SELECT  p5.user_id,
+        round((((p5.amount*p5.percent/100)+p5.amount) - coalesce(pa.paid_amount,0))::DEC,2) AS current_debt
+FROM prepayments AS p5 JOIN prepayment_status_logs psl5 ON p5.id = psl5.prepayment_id
+                       LEFT JOIN paid_amt pa ON pa.prepayment_id = p5.id
+WHERE psl5.status = 3 AND psl5.is_active = True) ' ||
+                                                     'SELECT t3.user_id::TEXT AS rowid,
+multiplier::TEXT AS category,
+((debt.current_debt::DEC) - (ROUND((revenue * multiplier)::DEC, 2))) AS values
+FROM (SELECT t2.user_id,
+date::DATE,
+(SELECT coalesce(SUM(vcrr.channel_app + vcrr.channel_oth + vcrr.channel_sht + vcrr.channel_ppp + vcrr.channel_sct +
+vcrr.channel_spt + vcrr.channel_pug + vcrr.channel_aug - vcrr.usa_tax), 0) AS revenue
+FROM user_channel AS uc
+JOIN channels AS c ON uc.channel_id = c.id
+JOIN owners AS o ON c.owner_id = o.id
+JOIN connect_requests AS cr ON cr.channel_id = c.id
+JOIN view_connect_request_monthly_revenues AS vcrr ON cr.id = vcrr.connect_request_id
+WHERE uc.user_id = t2.user_id
+AND (is_ours = True)
+AND vcrr.date::date = (date_trunc(''month'',now())::date - interval ''1 month'')::date),
+                                            EXTRACT(month FROM (age(date, NOW() - INTERVAL ''1'' MONTH))) +
+                                            EXTRACT(year FROM (age(date, NOW() - INTERVAL ''1'' MONTH))) * 12 AS multiplier
+                                      FROM (SELECT users.id AS user_id, ' ||
+                                                     'date
+                                               FROM (SELECT DATE(DATE_TRUNC(''month'', NOW())) + (INTERVAL ''1'' MONTH * GENERATE_SERIES(0, 23)) AS date) AS t
+                                                     CROSS JOIN users
+                                                     WHERE EXISTS(SELECT 1
+                                                                  FROM prepayment_status_logs AS psl
+                                                                         WHERE psl.is_active = True
+                                                                         AND psl.status = 3
+                                                                         AND exists(SELECT 1 ' ||
+                                                     'FROM prepayments AS p ' ||
+                                                     'WHERE p.user_id = users.id))) AS t2) AS t3 ' ||
+                                                     'JOIN debt ON debt.user_id = t3.user_id) AS x ')
+                             AS ct(rowid TEXT, month_1 TEXT, month_2 TEXT, month_3 TEXT, month_4 TEXT, month_5 TEXT,
+                                   month_6 TEXT, month_7 TEXT, month_8 TEXT, month_9 TEXT, month_10 TEXT, month_11 TEXT,
+                                   month_12 TEXT,
+                                   month_13 TEXT, month_14 TEXT, month_15 TEXT, month_16 TEXT, month_17 TEXT,
+                                   month_18 TEXT, month_19 TEXT, month_20 TEXT, month_21 TEXT, month_22 TEXT,
+                                   month_23 TEXT, month_24 TEXT)) AS to_dec),
+     rev_30_days as (select uc.user_id                                 as user_id,
+                            sum(vcrr.channel_app + vcrr.channel_ppp + vcrr.channel_sct +
+                                vcrr.channel_spt + vcrr.channel_pug + vcrr.channel_aug - vcrr.usa_tax
+                                + vcrr.channel_oth + vcrr.channel_sht) as revenue_30_days_all_channels
+                     from user_channel uc
+                              join channels c on uc.channel_id = c.id
+                              join owners o on c.owner_id = o.id
+                              join connect_requests cr on cr.channel_id = c.id
+                              join view_connect_request_revenues vcrr on cr.id = vcrr.connect_request_id
+                     where (o.is_ours = True)
+                       and vcrr.date between (now()::date - interval '1 month') and now()::date
+                     group by uc.user_id)
+SELECT m.title                as csp_title,
+       dec_.*,
+       prep.id                as prepayment_id,
+       prep.payout_percent,
+       prep.total_debt,
+       round(fee::decimal, 2) as fee,
        case
-           when extract(day from current_date) <= 20
-               then round((last_month_revenue_anal2 * payout_percent / 100)::dec, 2)
-           else round((last_month_revenue_fact * payout_percent / 100)::dec, 2) end                as next_month_payment,
-       return_period,
-       round(payment_per_mon_forecast, 2)                                                          as payment_per_mon_forecast,
-       current_debt,
-       (CASE
-            WHEN payout_percent > 0
-                THEN (case
-                          when extract(day from current_date) <= 20 and last_month_revenue_anal > 0
-                              then CEILING(current_debt / (last_month_revenue_anal * payout_percent / 100))
-                          when last_month_revenue_fact > 0
-                              then CEILING(current_debt / (last_month_revenue_fact * payout_percent / 100)) end)
-           END)                                                                                    as payment_period_forecast,
-       (CASE
-            WHEN last_month_revenue_fact > 0 and payout_percent > 0
-                then CEILING(current_debt / (last_month_revenue_fact * payout_percent / 100)) end) as payment_period_forecast_fact,
-       case
-           when (max_r.channels_count is null) then 0
-           else max_r.channels_count end                                                           as channels_count,
-       round(avg_tx::dec, 2)                                                                       as avg_tx,
-       case
-           when last_month_revenue_anal is not null
-               then
-               round(((mysum51 + last_month_revenue_anal * payout_percent / 100) /
-                      (amt_funds + 1) / (total_debt / return_period))::dec, 2)
-           else
-               round((mysum51 / (amt_funds + 1) /
-                      (total_debt / return_period))::dec, 2) end                                   as avg_tx_anal,
-       round(abs(month_1_sum), 2)                                                                  as month_1_sum,
-       round(abs(month_2_sum), 2)                                                                  as month_2_sum,
-       round(abs(month_3_sum), 2)                                                                  as month_3_sum,
-       round(abs(month_4_sum), 2)                                                                  as month_4_sum,
-       round(abs(month_5_sum), 2)                                                                  as month_5_sum,
-       round(abs(month_6_sum), 2)                                                                  as month_6_sum,
-       round(abs(month_7_sum), 2)                                                                  as month_7_sum,
-       round(abs(month_8_sum), 2)                                                                  as month_8_sum,
-       round(abs(month_9_sum), 2)                                                                  as month_9_sum,
-       round(abs(month_10_sum), 2)                                                                 as month_10_sum,
-       round(abs(month_11_sum), 2)                                                                 as month_11_sum,
-       round(abs(month_12_sum), 2)                                                                 as month_12_sum,
-       return_period - amt_funds                                                                   as mon_left,
-       ROUND((total_debt / (1 + percent / 100) * (percent / 100))::dec, 2)                         as fee,
-       amt_funds,
-       last_month_revenue_anal2
-FROM main
-         left join max_r
-                   on max_r.user_id = main.user_id;
+           when revenue_30_days_all_channels is null
+               then 0
+           else revenue_30_days_all_channels
+           end                as revenue_30_days_all_channels
+FROM dec_
+         JOIN users u on u.id = dec_.rowid
+         JOIN mcns m on u.mcn_id = m.id
+         JOIN (select p.id,
+                      p.user_id,
+                      p.payout_percent,
+                      round((p.amount * (1 + p.percent / 100))::dec, 2) as total_debt,
+                      p.percent * p.amount / 100                        as fee
+               from prepayments p
+                        join prepayment_status_logs psl on p.id = psl.prepayment_id
+               where psl.status = 3
+                 and psl.is_active) prep on u.id = prep.user_id
+         LEFT JOIN rev_30_days r30 on r30.user_id = u.id;
